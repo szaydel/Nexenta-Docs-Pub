@@ -1,0 +1,99 @@
+<h1 id="nexentastornfsv4exportsandautofsonlinux-basednfsclients">NexentaStor NFSv4 Exports and AutoFS on Linux-based NFS Clients</h1>
+
+<p><strong>Revision info:</strong><br/>
+<strong>Last modified: 12/28/2011</strong><br/>
+<strong>Version: 1.0.2</strong> </p>
+
+<p>Notes:<br/>
+Document not ready for public distribution. </p>
+
+<p>NFS is very commonly used today for shared access to files, and in distributed environments, more and more it is being used to host users&#8217; home directories, shared installation files, and any other data which needs to be accessible from multiple locations. There are many instances where having permanent NFS mountpoints is not required, or is not practical. One example of this would be user home directories. It is not uncommon to see each user&#8217;s home directory be an individual folder (aka dataset) on the NexentaStor system, and each such folder being shared out via NFS, and sometimes CIFS. Obvious benefits of this are ease of implementing quotas, and ability to snapshot individual filesystems. In this document we will focus specifically on NFSv4; however, all the same steps with minor differences in mount options apply to NFSv3. </p>
+
+<h3 id="objective:">Objective:</h3>
+
+<p>It is not practical to mount hundreds of filesystems on any machine at once, but it may be practical to mount them on as-needed basis, and unmount automatically after some period of inactivity. Most Unix and Linux systems devised a method to do this, known as AutoFS, or Automount. AutoFS works with a number of different filesystems, and is very well suited to complementing NFS. There are a number of ways to tie AutoFS into LDAP to make distribution of configuration files known as maps much more centralized. However, we will only address the basic configuration here, which will be most commonly implemented in smaller to medium-size environments. </p>
+
+<p>We are going to configure a NFS Export as a NFSv4 mountpoint, which is automatically mounted as a user&#8217;s home directory when user logs in. This will be an adequate example of a very scalable mechanism for mounting directories automatically on a temporary basis. </p>
+
+<h3 id="assumptions:">Assumptions:</h3>
+
+<p>We are making a number of assumptions about the environment, and they are as follows: </p>
+
+<ul>
+<li><p>Client is Ubuntu Linux 11.10.</p></li>
+<li><p>Both SAN and client are using a dedicated VLAN on 10.8.0 subnet and both are part of <code>homer.lab</code> domain.</p></li>
+<li><p>A static DNS entry was created for the IP of the SAN from which home directories are shared : <code>nethomes-10-8-0-99.homer.lab</code></p></li>
+<li><p>SAN and client(s) are either directly attached, or are switched via a network that does not exhibit single points of failure, such a single switch, single path between switches, etc.</p></li>
+<li><p>Auth_sys will be used for user authentication between client and server.</p></li>
+<li><p>Username of fictional user is <code>labusr_a</code>, and this user exists both on the SAN and on the client: </p>
+
+<pre><code># id labusr_a
+uid=5001(labusr_a) gid=10099(labusers) groups=10099(labusers)
+
+# cat /etc/passwd | grep labusr_a
+labusr_a:x:5001:10099:,,,:/eng/labusr_a:/bin/bash  
+</code></pre></li>
+<li><p>Our fictional user <code>labusr_a</code> is member of the engineering group, and the base directory of <code>/eng</code> will be used to mount his home directory, resulting in a full path of <code>/eng/labusr_a</code> when mounted.</p></li>
+<li><p>Home directory for test user is set to <code>/eng/labusr_a</code>.</p></li>
+<li><p>We are assuming there is an existing folder, which has been shared out via NFS, and could be mounted from the client. In our case <code>/volumes/lab9_pool_b/nfs/homes/eng/labusr_a</code> is the existing mountpoint. We are also assuming that ACL has been adjusted to give <code>labusr_a</code> correct permissions to this share. Please, refer to other NexentaStor documentation, starting with the &#8220;User&#8217;s Guide&#8221; for details about setting up NFS shares.</p></li>
+</ul>
+
+<h3 id="stepsonnexentastorsan:">Steps on NexentaStor SAN:</h3>
+
+<p>Perform following steps via Management GUI (NMV).</p>
+
+<ol>
+<li><p>Navigate to <strong>Data Management &gt; Shares</strong> and Click on NFS next to the root of our share <code>labusr_a</code>, in our case <code>lab9_pool_b/nfs/homes/eng</code>. </p></li>
+<li><p>Validate that Authentication Type is <code>AUTH_SYS</code>, which will require for user&#8217;s UID to match between SAN and the client. If Anonymous or Anonymous Read-Write are checked, be sure to un-check them.</p></li>
+<li><p>To better control access to the shares we are restricting Read-Write to addresses in the 10.8 range in our example. It is always a good idea to constrain access to specific IPs or ranges. Setting the Read-Write field to <code>@10.8/16</code> will restrict access as desired. We are using an <code>@</code> sign to distinguish this entry as a network address. For multiple entries, use a colon <code>:</code> to separate. No spaces are required.</p></li>
+<li><p>We are expecting that root from client will have equivalent permissions as root on the SAN, and as such we add the following: <code>@10.8/16</code> to the Root field. This may or may not be an acceptable practice in your environment.</p></li>
+<li><p>Check the Recursive flag at the bottom, to make sure that these settings apply to folders under our current root folder <code>lab9_pool_b/nfs/homes/eng</code>.</p></li>
+</ol>
+
+<h3 id="stepsclient-side:">Steps Client-Side:</h3>
+
+<ol>
+<li><p>At this point we are ready to make necessary changes on the client. First, we need to make sure that we have access to our share. We use <code>showmount -e</code> to validate observability of the share:</p>
+
+<pre><code>medina# showmount -e nethomes-10-8-0-99
+Export list for nethomes-10-8-0-99:
+/volumes/lab9_pool_b/nfs/homes/eng          @10.8/16
+/volumes/lab9_pool_b/nfs/homes/eng/labusr_b @10.8/16
+/volumes/lab9_pool_b/nfs/homes/eng/labusr_a @10.8/16  
+</code></pre>
+
+<p>We can see here output from the <code>showmount</code> command displaying mounts currently being exported from the SAN. If this fails, you should not proceed any further until you can resolve inability to see shares from the SAN. Troubleshooting of this is out of scope of this document. Consider manually mounting the the share to validate access to it.</p></li>
+<li><p>If Autofs has not already been installed, please do so now. All further steps assume existence of Autofs and its related configuration files. Because installation methods vary between distributions, we are going to forgo this part and assume that you will reference documentation for your distribution.</p></li>
+<li><p>We create a <code>/eng</code> directory which will be our base path under which all home directories will be mounted.</p>
+
+<pre><code>medina# mkdir /eng  
+</code></pre></li>
+<li><p>After Autofs is installed, we will have a number of default config files added, typically under <code>/etc</code>. We will focus on <code>/etc/auto.master</code> at the moment. We are going to edit the file, and add the following entry. It really does not matter where in the file it is placed. First line is a comment, and second is a map, saying that anything that we search under <code>/eng</code> will follow the directions included in <code>/etc/auto.eng</code>. The name of the file with instructions could be any arbitrary name, but by convention it is <code>auto.&lt;name-of-base-directory&gt;</code>.</p>
+
+<pre><code>medina# vi /etc/auto.master
+
+## Mount home directories against nethomes-10-8-0-99.homer.lab:/volumes/lab9_pool_b/nfs/homes/eng
+/eng    /etc/auto.eng  
+</code></pre></li>
+<li><p>Next, we will modify <code>/etc/auto.eng</code> and include specifics about what should be mounted. Notice, we are starting the like with <code>*</code>, meaning any. This is equivalent to <code>/eng/*</code>, and would essentially match any name, such as <code>/eng/labusr_a</code>. Second column contains NFS options, and in this instance -fstype=nfs4 tells Autofs to mount the share as a NFSv4 share. Notice also that last character is <code>&amp;</code>, which basically takes on the value of whatever <code>*</code> has matched. In our example with <code>labusr_a</code> it would take on that value resulting in the following path: <code>/volumes/lab9_pool_b/nfs/homes/eng/labusr_a</code></p>
+
+<pre><code>*       -fstype=nfs4,hard,intr,nodev,nosuid,rw,acl,sec=sys      nethomes-10-8-0-99.homer.lab:/volumes/lab9_pool_b/nfs/homes/eng/&amp;  
+</code></pre></li>
+<li><p>Now, as a test we become <code>labusr_a</code> via <code>su</code> and validate our ability to access the home directory. Using touch, we can quickly validate that we have access to the share.</p>
+
+<pre><code>medina# su - labusr_a
+labusr_a@medina:~$ pwd
+/eng/labusr_a
+
+labusr_a@medina:~$ touch testfile.1 &amp;&amp; ls -l testfile.1
+-rw-r--r-- 1 labusr_a labusers 4 2011-12-28 17:51 testfile.1  
+</code></pre></li>
+<li><p>Finally, we can check to see what the mountpoint looks like, and whether or not it is indeed obeying our instructions that we set in <code>/etc/auto.eng</code>. </p>
+
+<pre><code>medina# mount | grep nethomes
+
+nethomes-10-8-0-99.homer.lab:/volumes/lab9_pool_b/nfs/homes/eng/labusr_a on /eng/labusr_a type nfs4 (rw,nosuid,nodev,hard,intr,acl,sec=sys,sloppy,addr=10.8.0.99,clientaddr=10.8.0.28)  
+</code></pre></li>
+</ol>
+
+<p>In conclusion, let&#8217;s just sum up some observations. First, it is clear that we can create as many mountpoints as we wanted, and this absolutely does not limit us in any way. If we wanted to do <code>/homes</code> or <code>/homes/eng</code> or <code>/nethomes</code>, we could. Autofs is a very powerful and flexible framework and can be leveraged in a number of different ways. This is of course just a very simple and basic example of one of its uses. Consider other uses for it, including access to shares by various scheduled tasks that may be running out of <code>cron</code>, perhaps in concert with automation tools such as Puppet, Chef, Fabric, and other similar tools.</p>

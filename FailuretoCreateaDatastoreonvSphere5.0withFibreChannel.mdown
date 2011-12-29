@@ -1,0 +1,41 @@
+#Failure to Create a Datastore on vSphere 5.0 with Fibre Channel#
+
+Since the release of VMware vSphere 5.0, we are observing problems with certain VAAI features in vSphere, resulting in a number of issues. Out of the box, VAAI features, which were implemented using T10 SCSI command set are enabled, with expectation that back-end storage does support T10 standard. If the device does not happen to be fully compliant with the VAAI implementation the commands will not succeed and the host will not use those commands. While the support for the primitives used by VAAI is present in NexentaStor 3.1.x, there appear to be issues with provisioning a new VMFS version 3 or version 5 datastore via Fibre Channel. Thus far all reported or observed issues have been with Fibre channel only, and only with vSphere 5.0.
+
+This may be affecting you if you are currently running a Fibre channel based Storage Area Network, and are planning to migrate to, or deploy a new vSphere 5.0 environment. From the Fibre channel hardware standpoint, reported problems were with Q-Logic adapters, specifically `QLE2462` and `QLE2562` both on the SAN and client; however, it is not at all clear whether this is particular to Q-Logic, or simply a coincidence due to popularity of adapters. If you are planning to migrate to Fibre channel, you may be exposing yourself to this issue, and should thoroughly test VAAI functionality in your environment, as well as testing with it disabled as described further in the article.  
+
+Again, this issue should not be affecting those who do not specifically deploy a Fibre channel SAN fabric, this problem is not affecting iSCSI connected LUNs, only Fibre Channel. However, there are not enough samples at the moment to make this a definitive statement.  
+
+There are some clues to the problem based on entries in vmkernel logs on the vSphere hosts as well as abreviated "user friendly" logs via vCenter or vSphere client.
+
+        "Call "HostDatastoreSystem.CreateVmfsDatastore" for object "somedatastorename" on vCenter Server "esxi-host.local" failed.
+        2011-10-08T14:12:19.976Z cpu14:4957)Vol3: 647: Couldn't read volume header from control: Invalid handle
+        2011-10-08T14:12:19.976Z cpu14:4957)FSS: 4333: No FS driver claimed device 'control': Not supported
+        2011-10-08T14:12:19.990Z cpu14:4957)VC: 1449: Device rescan time 41 msec (total number of devices 7)
+        2011-10-08T14:12:19.990Z cpu14:4957)VC: 1452: Filesystem probe time 37 msec (devices probed 6 of 7)
+        2011-10-08T14:12:20.102Z cpu14:4957)FSS: 4333: No FS driver claimed device 'naa.600144f0fcd0870000004e902d0a0002:1': Not supported
+        2011-10-08T14:12:20.102Z cpu14:4957)Vol3: 647: Couldn't read volume header from control: Invalid handle
+        2011-10-08T14:12:20.102Z cpu14:4957)FSS: 4333: No FS driver claimed device 'control': Not supported
+        2011-10-08T14:12:20.115Z cpu14:4957)VC: 1449: Device rescan time 7 msec (total number of devices 8)
+        2011-10-08T14:12:20.115Z cpu14:4957)VC: 1452: Filesystem probe time 27 msec (devices probed 7 of 8)
+        2011-10-08T14:12:20.118Z cpu14:4957)Partition: 576: GUID Partitition Entry Array CRC invalid. origCrc=0xca44ead3 calculated=0xab54d286
+
+        Operation failed, diagnostics report: Unable to create Filesystem, please see VMkernel log for more details: Failed to check for existing file system on device '/vmfs/devices/disks/naa.600144f0fcd0870000004e902d0a0002:1'.
+
+        Call "HostDatastoreSystem.CreateVmfsDatastore" for object "somedatastorename" on vCenter Server "nameofserver.local" failed.
+        Operation failed, diagnostics report:  Unable to create Filesystem, please see VMkernel log for more details: Failed to check for existing file system on device '/vmfs/devices/disks/naa.600144f0fcd0870000004e902d0a0002:1'
+
+Customers are advised to consider disabling the following parameters in vSphere 5.0, if they are experiencing inability to create a new VMFS 3 or VMFS 5 datastore.  
+
+        VMFS3.EnableBlockDelete (UNMAP)
+        VMFS3.HardwareAcceleratedLocking
+
+It is quite simple to validate current settings on the vSphere host via the vSphere CLI and directly via 'ssh'. With 'ssh' enabled or via console, you can run the following commands to check current settings.  
+
+        # esxcli system settings advanced list -o /VMFS3/EnableBlockDelete
+        # esxcli system settings advanced list -o /VMFS3/HardwareAcceleratedLocking
+
+You can change the settings with the following commands. Setting the value to `0` disables the feature, while setting it to `1` enables the feature.  
+
+        # esxcli system settings advanced set --int-value 0 --option /VMFS3/EnableBlockDelete
+        # esxcli system settings advanced set --int-value 0 --option /VMFS3/HardwareAcceleratedLocking

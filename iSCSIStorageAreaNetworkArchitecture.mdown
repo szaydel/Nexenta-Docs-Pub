@@ -1,0 +1,51 @@
+# iSCSI Storage Area Network Architecture #
+
+In multi-protocol environments iSCSI is commonly used along with Fibre-Channel, NFS, and perhaps SMB. It is critical to understand requirements and best-practices of each protocol in order to design an effective, robust, manageable and highly-available Storage Area Network. iSCSI protocol is essentially SCSI protocol mapped over the TCP/IP stack as transport. iSCSI protocol was built from the ground-up to fully leverage inherent robustness of the TCP/IP protocol. While in most cases simple to configure, there are a number of considerations to make and best practices to consider, when designing a highly available iSCSI, or mixed Storage Area Network.
+
+### Objective: ###
+
+We are going to focus on select topics which should be considered and implemented in most if not all iSCSI-based Storage Area Networks. Specific configuration details are out of scope of this document, but the items covered are applicable to multiple operating systems and not specific to any particular equipment vendor.
+
+* Physical network configuration decisions
+* Enabling high-availability configurations
+* One versus multiple targets and portal groups
+
+Because iSCSI seems to just work without very much effort on the part of storage administrator many best practices for Network design are ignored, or not implemented correctly. It is critical to keep in mind that iSCSI behaves like any other application that uses TCP/IP and depending upon how it was configured may result in instances where interfaces not intended to be used for iSCSI actually end-up carrying iSCSI traffic. A very important first consideration to make with iSCSI is path isolation. Ideally, your environment will have a dedicated Storage Area Network, and may in fact have subnets or VLANs dedicated specifically to iSCSI traffic. Having dedicated subnets or VLANs has a number of advantages over mixing storage traffic and non-storage traffic on the same switching gear.
+
+### Latency Considerations ###
+
+Switches introduce latency in a network, critically Storage Networks are far more latency sensitive than typical application networks, and as such may need equipment and architecture different from that used on your existing application network. Configurations vary widely, and it is not uncommon to see application networks having multiple hops between any two servers or servers and clients. Latency is an enemy to a seamless storage experience, especially when storage being provisioned is used to build datastores for virtual environments, or Virtual Desktop Infrastructures. It is common to observe a small difference of less than 10 ms playing a big role in apparent performance of applications accessing storage via a network. To keep latency to a minimum always opt for equipment with low latency and design either a dedicated Storage Area Network or at the very least consider impact of latency to your existing network, and attempt to implement your storage with control of latency in mind. 
+
+Number of hops between your Clients and the iSCSI SAN should be kept to an absolute minimum. Hops will add latency, with each switch potentially contributing to additional complexity and additional points for failure. For example, consider this network topology: `Client ==> Switch-A ==> Switch-B ==> Switch-C ==> NexentaStor`, where as you can see our data path necessitates each iSCSI packet to move through three switches. In this scenario, if any of any one of the three switches is problematic, or significantly contributes to latency in traffic, we will have to deal with troubleshooting potentially 5 separate things: the client, the SAN, and each switch, as well as physical connections between switches. With iSCSI it is best to simplify your configuration as much as possible, ideally using a dedicated very low-latency storage network, where switching equipment is as close as possible to clients and the SAN. In our earlier example, if `Switch-B` is sufficiently oversubscribed, its ability to deliver highly critical storage traffic will be reduced, resulting in added latency between Client and SAN. In this example the switch in the middle: `Switch-B`, if it were busy enough could end up dropping our storage data packets, resulting in obvious performance penalty and in cases of highly sensitive applications, perhaps a completely unacceptable performance. When designing a Storage Area Network, be sure you are monitoring all points between your Client and SAN to make sure that your data path maintains low latency at each point.
+
+### Bandwidth Capability Mixing ###
+
+Always maintain the same bandwidth capability at each point in your Storage Area Network. For example, consider this network topology: `Client ==> (10GbE Link) Switch-A ==> (10GbE Uplink) Switch-B ==> (1GbE Uplink) ==> Switch-C (10GbE Uplink) ==> NexentaStor`, where `Switch-B` has a 1GbE link to `Switch-C`, but `Switch-C` has a 10GbE Link to a NexentaStor solution. In this case, while both Client and NexentaStor have a 10GbE to switch, we are effectively constrained by the 1GbE Uplink and as such our best possible bandwidth between Client and NexentaStor will be 1GbE. Sub-par performance due to this asymmetry in bandwidth capability is frequently mis-diagnosed as a network issue on the Client or on NexentaStor, where in reality the design of the network is the main factor. Similarly, it is very possible to severely impair your iSCSI performance by having clients connected at 10GbE to a network where your NexentaStor only has a 1GbE connection.
+
+Multipathing with iSCSI presents a very strong argument in favor of selecting iSCSI over protocols such as NFS when highly-available configurations are required. At the highest level, iSCSI Multipathing is achieved by establishing more than one path to to LUNs between the Client and NexentaStor. There are a number of mechanisms, both software and hardware by which this functionality could be achieved. It is best to design your Storage Area Network with expectation that iSCSI Multipathing will be implemented from the start. While it may be at times enough to have only one switch, and maintain multiple physical connections from each client and from NexentaStor to the switch, if you are seeking high-availability, you should strongly consider having two or more parallel networks each of which would present a completely unique path between Client and NexentaStor. Parallel networks have to be configured with physical and logical separation. Dedicating a Subnet or a VLAN to each network path are the best methods to logically isolate each path. 
+
+Physical switch topology may vary, but there are essentially two commonly used models: 
+
+1. Two or more networks are completely parallel and there are no interconnects between switches.  
+
+                    --------------------------------------------
+                    | NIC-A |=======| Switch-A |=======| NIC-A |
+                    --------------------------------------------
+        Client <===>|                                          |<===> NexentaStor
+                    --------------------------------------------
+                    | NIC-B |=======| Switch-B |=======| NIC-B |
+                    --------------------------------------------
+        Diagram 1a
+
+2. Two or more networks are mostly parallel but there are interconnects between switches. Notice, in Diagram 1b below there are two interconnects between `Switch-A` and `Switch-B`, resulting in potentially four unique paths between Client and NexentaStor.
+
+                    --------------------------------------------
+                    | NIC-A |=======| Switch-A |=======| NIC-A |
+                    --------------------------------------------
+        Client <===>|               |X|      |X|               |<===> NexentaStor
+                    --------------------------------------------
+                    | NIC-B |=======| Switch-B |=======| NIC-B |
+                    --------------------------------------------
+        Diagram 1b
+
+In both models above we are assuming one switch between Client and NexentaStor, if we have multiple switches along the way, complexity increases, and number of possible paths also increase, depending upon number of switches and interconnects.

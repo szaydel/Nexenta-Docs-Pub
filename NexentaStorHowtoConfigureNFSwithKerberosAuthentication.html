@@ -1,0 +1,197 @@
+<h1 id="nexentastorhowtoconfigurenfswithkerberosauthentication">NexentaStor How to Configure NFS with Kerberos Authentication</h1>
+
+<p>This document is a step-by-step guide to help you with implentation of Kerberized NFS. Kerberos is an authentication mechanism based on tokens and in combination with NFSv4 allows for a very secure framework for file sharing. Please note, this is a simplified guide, and assumes a basic environment. All concepts are relevent and scale, but advanced topics such as crossing Realms, multiple dns domains, etc., are purposely ommitted. Please keep in mind that this is an advanced configuration option, and <strong>failure to configure correctly may lead to loss of services</strong>. As such, please follow with caution, and if unsure, engage Support prior to making changes. </p>
+
+<p>We are going to assume a number of things, in order to shorten the length of this document. There are some absolute requirements for Kerberos to work correctly, and we are going to assume that they are already configured and working in your environment. Note, this model is not practical in a large
+environment, and should only be considered as a small subset of a larger, more flexible configuration. It is most common to see Keberos integrated with LDAP, which is out of scope of this document. </p>
+
+<h3 id="assumptions:">Assumptions:</h3>
+
+<ul>
+<li>Our Test Kerberos environment is all part of the same DNS domain and same Kerberos REALM</li>
+<li>Environment has properly functioning DNS, or ALL hosts have properly configured hosts entries, and are able to correctly perform forward and reverse lookups of each other</li>
+<li>Our client(s) is/are configured correctly in the REALM and are able to acquire tickets properly</li>
+<li>We have a fully functional NTP on ALL clients and our SAN, and the times are kept synchronized</li>
+<li>Our clients are capable of mounting NFSv4 shares, and for the purposes of this document our client is an ubuntu server</li>
+<li>Administrative/root access is used to make all modifications</li>
+<li>Our KDC server and NFS client are the same system</li>
+<li>Account for test user [sandbu01] has already been created on both SAN and client(s) with same UID/GID</li>
+<li>Account has been added to the ACL for the filesystem being shared out, and has necessary rights to create, modify and remove data</li>
+</ul>
+
+<h3 id="parameters:">Parameters:</h3>
+
+<p>There are a number of parameters that we will work with, and they are as follows: </p>
+
+<pre><code>    * Kerberos Realm = HOMER.LAB
+    * DNS Domain = homer.lab
+    * kdc server = server-lab2.homer.lab
+    * kdc admin Principal admin/admin
+    * NFS server (NexentaStor) = server-lab9.homer.lab
+    * NFS service Principal = nfs/server-lab9.homer.lab@HOMER.LAB
+    * Filesystem being shared = lab9_pool_a/path/to/data
+    * Test user = sandbu01 uid: 1021
+    * User Principal = sandbu01
+</code></pre>
+
+<h3 id="steps:">Steps:</h3>
+
+<p>First, from the KDC Admin server, or from any server in the REALM we create our principals and add them to the keytab file, which we will later push to the SAN. In this instance changes are mode on the KDC Admin server:</p>
+
+<ol>
+<li><p>We are going to create or host and service principals, as well as our user principal. Host principles will be created both for NFS client, and NFS server. In your environment some parameters will be different, so please, adjust accordingly.</p>
+
+<pre><code># kadmin -p admin/admin
+kadmin:  addprinc sandbu01
+WARNING: no policy specified for sandbu01@HOMER.LAB; defaulting to no policy
+Enter password for principal &quot;sandbu01@HOMER.LAB&quot;: 
+Re-enter password for principal &quot;sandbu01@HOMER.LAB&quot;: 
+Principal &quot;sandbu01@HOMER.LAB&quot; created.
+kadmin:  addprinc -randkey host/server-lab2.homer.lab  
+WARNING: no policy specified for host/server-lab2.homer.lab@HOMER.LAB; defaulting to no policy
+Principal &quot;nfs/server-lab9.homer.lab@HOMER.LAB&quot; created. 
+kadmin:  addprinc -randkey host/server-lab9.homer.lab  
+WARNING: no policy specified for host/server-lab9.homer.lab@HOMER.LAB; defaulting to no policy  
+Principal &quot;nfs/server-lab9.homer.lab@HOMER.LAB&quot; created.  
+kadmin:  addprinc -randkey nfs/server-lab9.homer.lab  
+WARNING: no policy specified for nfs/server-lab9.homer.lab@HOMER.LAB; defaulting to no policy  
+Principal &quot;nfs/server-lab10.homer.lab@HOMER.LAB&quot; created.  
+kadmin:  ktadd sandbu01@HOMER.LAB
+...output trimmed...
+kadmin:  ktadd host/server-lab2.homer.lab  
+...output trimmed...
+kadmin:  ktadd host/server-lab9.homer.lab  
+...output trimmed...
+kadmin:  ktadd nfs/server-lab9.homer.lab  
+...output trimmed...
+</code></pre></li>
+<li><p>Now that we have all principals that we need added to the <code>/etc/krb5.keytab</code> file, we are going to copy this file to our SAN. We first want to validate that entries were indeed added to the keytab.</p>
+
+<pre><code># klist -k
+Keytab name: WRFILE:/etc/krb5.keytab
+KVNO Principal
+---- --------------------------------------------------------------------------
+   2 host/server-lab2.homer.lab@HOMER.LAB
+   2 host/server-lab2.homer.lab@HOMER.LAB
+   2 host/server-lab2.homer.lab@HOMER.LAB
+   2 host/server-lab2.homer.lab@HOMER.LAB
+   2 nfs/server-lab9.homer.lab@HOMER.LAB
+   2 nfs/server-lab9.homer.lab@HOMER.LAB
+   2 nfs/server-lab9.homer.lab@HOMER.LAB
+   2 nfs/server-lab9.homer.lab@HOMER.LAB
+...output trimmed...
+</code></pre></li>
+<li><p>At this point we are scp&#8217;ing a copy of the keytab file over to the SAN.</p>
+
+<pre><code># scp /etc/krb5.keytab root@server-lab9.homer.lab:/etc/krb5/krb5.keytab
+</code></pre></li>
+<li><p>Next, we want to make sure that IDMAPD and GSSD are enabled on the client, since they are required for NFSv4 mounts. We need to make sure that following two entries exist in <code>/etc/default/nfs-common</code>.</p>
+
+<pre><code>NEED_IDMAPD=yes  
+NEED_GSSD=yes  
+</code></pre></li>
+<li><p>Optionally, to enable RPC_GSSD logging, add the following entry to <code>/etc/default/nfs-common</code>. </p>
+
+<pre><code>RPCGSSDOPTS=&quot;-vvv&quot;
+</code></pre></li>
+<li><p>We also need to edit <code>/etc/idmapd.conf</code> to make sure we define the domain. The following entry was added to reflect current DNS domain.</p>
+
+<pre><code>[General]
+    Domain = homer.lab
+</code></pre></li>
+</ol>
+
+<p>Please, complete the following steps via NMC: </p>
+
+<ol>
+<li><p>Create a configuration checkpoint to have a known good configuration snapshot, prior to making any changes in case further changes result in a malfunctioning configuration. </p>
+
+<pre><code>nmc@server-lab9:/$ setup appliance checkpoint create  
+</code></pre></li>
+<li><p>Check <code>/etc/resolv.conf</code> and <code>/etc/hosts</code> to make sure that domain is correctly configured. If host names for clients and kdc servers are not properly resolvable via DNS, please make sure to modify <code>/etc/hosts</code> and include all necessary hostname to IP mappings. </p></li>
+</ol>
+
+<p>Setup hosts entries via the following command. Expect to use vi-style editing. </p>
+
+<pre><code>    nmc@server-lab9:/$ setup appliance hosts  
+</code></pre>
+
+<ol>
+<li><p>The following steps will be performed via the raw bash shell. Please, take great care in validating changes being made. We are going to switch to bash at this point. You will have accept the warning when prompted. </p>
+
+<pre><code>nmc@server-lab9:/$ option expert_mode=1  
+nmc@server-lab9:/$ !bash  
+You are about to enter the Unix (&quot;raw&quot;) shell and execute low-level Unix command(s).  
+Warning:  using low-level Unix commands is not recommended! Execute?  (y/n)  
+</code></pre></li>
+<li><p>First, we will modify the <code>/etc/krb5/krb.conf</code> configuration file, and prepare it for our Kerberos environment. Normally, this file is under RCS control, which means it is monitored for changes. We will need to check-out and later check-in his file, after changes are made. </p>
+
+<pre><code># co  -f -l /etc/krb5/krb5.conf  
+# vi /etc/krb5/krb5.conf  
+</code></pre></li>
+</ol>
+
+<p>The following sections have been modified in the case of our environment. Normally, this is all that should be required. However, you will need to adjust for your environment. If your DNS domain does not directly map to your Kerberos REALM, be sure to update the <code>[domain_realm]</code> section mapping your DNS domain to the your Kerberos REALM.</p>
+
+<pre><code>    [libdefaults]
+            default_realm = HOMER.LAB
+
+    [realms]
+    HOMER.LAB = {
+            kdc = server-lab2.homer.lab
+            #kdc = ___slave_kdc1___
+            #kdc = ___slave_kdc2___
+            #kdc = ___slave_kdcN___
+            admin_server = server-lab2.homer.lab
+    }
+
+    [domain_realm]
+            .homer.lab = HOMER.LAB
+            homer.lab = HOMER.LAB
+</code></pre>
+
+<p>At this point we will save changes and will need to check-in our modified file to properly revision-control it. </p>
+
+<pre><code>    # ci -u -m 'Setup file for our Kerberos REALM HOMER.LAB' /etc/krb5/krb5.conf  
+</code></pre>
+
+<ol>
+<li><p>Next, we need to enable addition security modes in <code>/etc/nfssec.conf</code>. We are going to uncomment the three lines that begin with <code>krb5</code>.</p>
+
+<pre><code># cp -p /etc/nfssec.conf /etc/nfssec.conf.backup
+# vi /etc/nfssec.conf
+
+#
+# Uncomment the following lines to use Kerberos V5 with NFS
+#
+krb5            390003  kerberos_v5     default -               # RPCSEC_GSS
+krb5i           390004  kerberos_v5     default integrity       # RPCSEC_GSS
+krb5p           390005  kerberos_v5     default privacy         # RPCSEC_GSS
+</code></pre></li>
+<li><p>Next, we need to restart the GSS service, in order to pick-up changes we made to <code>/etc/nfssec.conf</code>.</p>
+
+<pre><code># svcadm restart network/rpc/gss
+</code></pre></li>
+<li><p>Finally, we are going to share out our filesystem with Kerberos security mode options. In this instance <code>lab9_pool_a/path/to/data</code> is the path being shared out.</p>
+
+<pre><code># zfs set sharenfs=sec=krb5:krb5i:krb5p,rw=*,root=@server-lab2.homer.lab lab9_pool_a/path/to/data
+</code></pre></li>
+<li><p>From the client we will mount our exported filesystem and validate that we indeed can modify data on the share. We need to validate that we can create, modify and remove files. </p>
+
+<pre><code># mount -t nfs -o acl,sec=krb5 server-lab9.homer.lab:/volumes/lab9_pool_a/path/to/data /mnt
+sandbu01@server-lab2:/mnt$ :&gt; testfile.1
+sandbu01@server-lab2:/mnt$ echo &quot;xxxxxx&quot; &gt; testfile.1
+sandbu01@server-lab2:/mnt$ ls -l testfile.1
+-rw-r--r-- 1 sandbu01 labadm 7 2011-09-16 12:30 testfile.1
+
+sandbu01@server-lab2:/mnt$ rm testfile.1
+sandbu01@server-lab2:/mnt$ ls -l testfile.1
+ls: cannot access testfile.1: No such file or directory
+</code></pre></li>
+</ol>
+
+<h3 id="conclusion:">Conclusion:</h3>
+
+<p>At this point we have a basic model of what your implementaion may look like. To simplify configuration in a larger enterprise environment please consider leveraging DNS to store Kerberos REALM information. Please refer to additional documentation for this and other capabilities of Kerberos. </p>
+
+<p>It is critical to maintain a relationship of usernames and UIDs between clients and the SAN, in order to prevent authorization issues with Kerberos.</p>

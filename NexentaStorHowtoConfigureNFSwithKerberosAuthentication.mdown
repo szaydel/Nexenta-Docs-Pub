@@ -1,0 +1,181 @@
+# NexentaStor How to Configure NFS with Kerberos Authentication #
+
+This document is a step-by-step guide to help you with implentation of Kerberized NFS. Kerberos is an authentication mechanism based on tokens and in combination with NFSv4 allows for a very secure framework for file sharing. Please note, this is a simplified guide, and assumes a basic environment. All concepts are relevent and scale, but advanced topics such as crossing Realms, multiple dns domains, etc., are purposely ommitted. Please keep in mind that this is an advanced configuration option, and **failure to configure correctly may lead to loss of services**. As such, please follow with caution, and if unsure, engage Support prior to making changes.  
+
+We are going to assume a number of things, in order to shorten the length of this document. There are some absolute requirements for Kerberos to work correctly, and we are going to assume that they are already configured and working in your environment. Note, this model is not practical in a large 
+environment, and should only be considered as a small subset of a larger, more flexible configuration. It is most common to see Keberos integrated with LDAP, which is out of scope of this document.  
+
+### Assumptions: ###
+
+* Our Test Kerberos environment is all part of the same DNS domain and same Kerberos REALM
+* Environment has properly functioning DNS, or ALL hosts have properly configured hosts entries, and are able to correctly perform forward and reverse lookups of each other
+* Our client(s) is/are configured correctly in the REALM and are able to acquire tickets properly
+* We have a fully functional NTP on ALL clients and our SAN, and the times are kept synchronized
+* Our clients are capable of mounting NFSv4 shares, and for the purposes of this document our client is an ubuntu server
+* Administrative/root access is used to make all modifications
+* Our KDC server and NFS client are the same system
+* Account for test user [sandbu01] has already been created on both SAN and client(s) with same UID/GID
+* Account has been added to the ACL for the filesystem being shared out, and has necessary rights to create, modify and remove data
+
+### Parameters: ###
+
+There are a number of parameters that we will work with, and they are as follows:  
+
+        * Kerberos Realm = HOMER.LAB
+        * DNS Domain = homer.lab
+        * kdc server = server-lab2.homer.lab
+        * kdc admin Principal admin/admin
+        * NFS server (NexentaStor) = server-lab9.homer.lab
+        * NFS service Principal = nfs/server-lab9.homer.lab@HOMER.LAB
+        * Filesystem being shared = lab9_pool_a/path/to/data
+        * Test user = sandbu01 uid: 1021
+        * User Principal = sandbu01
+
+### Steps: ###
+
+First, from the KDC Admin server, or from any server in the REALM we create our principals and add them to the keytab file, which we will later push to the SAN. In this instance changes are mode on the KDC Admin server:
+
+1.  We are going to create or host and service principals, as well as our user principal. Host principles will be created both for NFS client, and NFS server. In your environment some parameters will be different, so please, adjust accordingly.
+
+        # kadmin -p admin/admin
+        kadmin:  addprinc sandbu01
+        WARNING: no policy specified for sandbu01@HOMER.LAB; defaulting to no policy
+        Enter password for principal "sandbu01@HOMER.LAB": 
+        Re-enter password for principal "sandbu01@HOMER.LAB": 
+        Principal "sandbu01@HOMER.LAB" created.
+        kadmin:  addprinc -randkey host/server-lab2.homer.lab  
+        WARNING: no policy specified for host/server-lab2.homer.lab@HOMER.LAB; defaulting to no policy
+        Principal "nfs/server-lab9.homer.lab@HOMER.LAB" created. 
+        kadmin:  addprinc -randkey host/server-lab9.homer.lab  
+        WARNING: no policy specified for host/server-lab9.homer.lab@HOMER.LAB; defaulting to no policy  
+        Principal "nfs/server-lab9.homer.lab@HOMER.LAB" created.  
+        kadmin:  addprinc -randkey nfs/server-lab9.homer.lab  
+        WARNING: no policy specified for nfs/server-lab9.homer.lab@HOMER.LAB; defaulting to no policy  
+        Principal "nfs/server-lab10.homer.lab@HOMER.LAB" created.  
+        kadmin:  ktadd sandbu01@HOMER.LAB
+        ...output trimmed...
+        kadmin:  ktadd host/server-lab2.homer.lab  
+        ...output trimmed...
+        kadmin:  ktadd host/server-lab9.homer.lab  
+        ...output trimmed...
+        kadmin:  ktadd nfs/server-lab9.homer.lab  
+        ...output trimmed...
+
+2.  Now that we have all principals that we need added to the `/etc/krb5.keytab` file, we are going to copy this file to our SAN. We first want to validate that entries were indeed added to the keytab.
+
+        # klist -k
+        Keytab name: WRFILE:/etc/krb5.keytab
+        KVNO Principal
+        ---- --------------------------------------------------------------------------
+           2 host/server-lab2.homer.lab@HOMER.LAB
+           2 host/server-lab2.homer.lab@HOMER.LAB
+           2 host/server-lab2.homer.lab@HOMER.LAB
+           2 host/server-lab2.homer.lab@HOMER.LAB
+           2 nfs/server-lab9.homer.lab@HOMER.LAB
+           2 nfs/server-lab9.homer.lab@HOMER.LAB
+           2 nfs/server-lab9.homer.lab@HOMER.LAB
+           2 nfs/server-lab9.homer.lab@HOMER.LAB
+        ...output trimmed...
+
+3.  At this point we are scp'ing a copy of the keytab file over to the SAN.
+
+        # scp /etc/krb5.keytab root@server-lab9.homer.lab:/etc/krb5/krb5.keytab
+
+4.  Next, we want to make sure that IDMAPD and GSSD are enabled on the client, since they are required for NFSv4 mounts. We need to make sure that following two entries exist in `/etc/default/nfs-common`.
+        
+        NEED_IDMAPD=yes  
+        NEED_GSSD=yes  
+
+5.  Optionally, to enable RPC_GSSD logging, add the following entry to `/etc/default/nfs-common`.  
+
+        RPCGSSDOPTS="-vvv"
+
+6.  We also need to edit `/etc/idmapd.conf` to make sure we define the domain. The following entry was added to reflect current DNS domain.
+
+        [General]
+            Domain = homer.lab
+
+
+Please, complete the following steps via NMC:  
+
+7.  Create a configuration checkpoint to have a known good configuration snapshot, prior to making any changes in case further changes result in a malfunctioning configuration.  
+
+        nmc@server-lab9:/$ setup appliance checkpoint create  
+
+8.  Check `/etc/resolv.conf` and `/etc/hosts` to make sure that domain is correctly configured. If host names for clients and kdc servers are not properly resolvable via DNS, please make sure to modify `/etc/hosts` and include all necessary hostname to IP mappings.  
+
+  Setup hosts entries via the following command. Expect to use vi-style editing.  
+
+        nmc@server-lab9:/$ setup appliance hosts  
+
+9.  The following steps will be performed via the raw bash shell. Please, take great care in validating changes being made. We are going to switch to bash at this point. You will have accept the warning when prompted.  
+        
+        nmc@server-lab9:/$ option expert_mode=1  
+        nmc@server-lab9:/$ !bash  
+        You are about to enter the Unix ("raw") shell and execute low-level Unix command(s).  
+        Warning:  using low-level Unix commands is not recommended! Execute?  (y/n)  
+
+10.  First, we will modify the `/etc/krb5/krb.conf` configuration file, and prepare it for our Kerberos environment. Normally, this file is under RCS control, which means it is monitored for changes. We will need to check-out and later check-in his file, after changes are made.  
+
+        # co  -f -l /etc/krb5/krb5.conf  
+        # vi /etc/krb5/krb5.conf  
+
+  The following sections have been modified in the case of our environment. Normally, this is all that should be required. However, you will need to adjust for your environment. If your DNS domain does not directly map to your Kerberos REALM, be sure to update the `[domain_realm]` section mapping your DNS domain to the your Kerberos REALM.
+
+        [libdefaults]
+                default_realm = HOMER.LAB
+
+        [realms]
+        HOMER.LAB = {
+                kdc = server-lab2.homer.lab
+                #kdc = ___slave_kdc1___
+                #kdc = ___slave_kdc2___
+                #kdc = ___slave_kdcN___
+                admin_server = server-lab2.homer.lab
+        }
+
+        [domain_realm]
+                .homer.lab = HOMER.LAB
+                homer.lab = HOMER.LAB
+
+  At this point we will save changes and will need to check-in our modified file to properly revision-control it.  
+        
+        # ci -u -m 'Setup file for our Kerberos REALM HOMER.LAB' /etc/krb5/krb5.conf  
+
+11.  Next, we need to enable addition security modes in `/etc/nfssec.conf`. We are going to uncomment the three lines that begin with `krb5`.
+
+        # cp -p /etc/nfssec.conf /etc/nfssec.conf.backup
+        # vi /etc/nfssec.conf
+
+        #
+        # Uncomment the following lines to use Kerberos V5 with NFS
+        #
+        krb5            390003  kerberos_v5     default -               # RPCSEC_GSS
+        krb5i           390004  kerberos_v5     default integrity       # RPCSEC_GSS
+        krb5p           390005  kerberos_v5     default privacy         # RPCSEC_GSS
+
+12.  Next, we need to restart the GSS service, in order to pick-up changes we made to `/etc/nfssec.conf`.
+
+        # svcadm restart network/rpc/gss
+
+13.  Finally, we are going to share out our filesystem with Kerberos security mode options. In this instance `lab9_pool_a/path/to/data` is the path being shared out.
+
+        # zfs set sharenfs=sec=krb5:krb5i:krb5p,rw=*,root=@server-lab2.homer.lab lab9_pool_a/path/to/data
+
+14. From the client we will mount our exported filesystem and validate that we indeed can modify data on the share. We need to validate that we can create, modify and remove files.  
+
+        # mount -t nfs -o acl,sec=krb5 server-lab9.homer.lab:/volumes/lab9_pool_a/path/to/data /mnt
+        sandbu01@server-lab2:/mnt$ :> testfile.1
+        sandbu01@server-lab2:/mnt$ echo "xxxxxx" > testfile.1
+        sandbu01@server-lab2:/mnt$ ls -l testfile.1
+        -rw-r--r-- 1 sandbu01 labadm 7 2011-09-16 12:30 testfile.1
+
+        sandbu01@server-lab2:/mnt$ rm testfile.1
+        sandbu01@server-lab2:/mnt$ ls -l testfile.1
+        ls: cannot access testfile.1: No such file or directory
+
+### Conclusion: ###
+
+At this point we have a basic model of what your implementaion may look like. To simplify configuration in a larger enterprise environment please consider leveraging DNS to store Kerberos REALM information. Please refer to additional documentation for this and other capabilities of Kerberos.  
+
+It is critical to maintain a relationship of usernames and UIDs between clients and the SAN, in order to prevent authorization issues with Kerberos.

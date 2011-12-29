@@ -1,0 +1,324 @@
+<h1 id="nexentastorhigh-availabilityiscsiwithlinuxclients">NexentaStor High-Availability iSCSI with Linux Clients</h1>
+
+<p><strong>Revision info:</strong><br/>
+<strong>Last modified: 12/02/2011</strong><br/>
+<strong>Version: 1.0.3</strong> </p>
+
+<p>Notes:<br/>
+Document not ready for public distribution. </p>
+
+<p>Depending upon criticality of your production environment, and in most cases a requirement when running various Clusters on Linux, such as Heartbeat or RedHat Cluster, it may be necessary to ensure highly-available access to allocated iSCSI LUNs. There are a number of ways to accomplish this, but in this document we are going to focus on an approach where we define two targets each bound to a Target Portal Group, which in-turn is related to a network interface. Each interface is on its own subnet. End-result of this is a configuration where we should always have two distinct paths, by which we can reach our Storage. If one path completely fails, we should still be able to operate in a reduced capacity, but not sustain a complete failure.</p>
+
+<h3 id="objective:">Objective:</h3>
+
+<p>The objective of this document is to present one of multiple designs for iSCSI multipathing between the NexentaStor SAN and a Linux client which in a real-world scenario may be part of large HA cluster. Same steps apply whether this is a single stand-alone system or a cluster. We are expecting that our Linux client(s) will be configured in a way where four paths exist to each block device mapped from the SAN. There will essentially be two paths per iSCSI interface from the client(s). This is due to the fact that each iSCSI interface will be bound to a dedicated physical network interface, and will login into both targets. It is best to establish a meaningful naming convention in advance of this setup, and follow the convention as much as possible. For clarity, we use the name of network interfaces in the Target Portal Group names, to easily identify which TPG ties to which physical network interface. </p>
+
+<p>We are going to effectively observe a configuration similar to the following, as a result of completing steps in this document. </p>
+
+<pre><code>    Login to [iface: sw-iscsi-1, target: iqn.2011-09.dom.homer:01:13611547-b4e6-e4b9-d97b-d1f4df275f58, portal: 10.10.8.90,3260] successful.
+    Login to [iface: sw-iscsi-0, target: iqn.2011-09.dom.homer:01:13611547-b4e6-e4b9-d97b-d1f4df275f58, portal: 10.10.8.90,3260] successful.
+    Login to [iface: sw-iscsi-1, target: iqn.2011-09.dom.homer:02:0e4f921a-407e-eb9f-9f53-aded8d99a723, portal: 10.10.9.90,3260] successful.
+    Login to [iface: sw-iscsi-0, target: iqn.2011-09.dom.homer:02:0e4f921a-407e-eb9f-9f53-aded8d99a723, portal: 10.10.9.90,3260] successful.
+</code></pre>
+
+<h3 id="assumptions:">Assumptions:</h3>
+
+<p>We are making a number of assumptions about the environment, and they are as follows: </p>
+
+<ul>
+<li>Client(s) are CentOS 6.</li>
+<li>Client(s) and SAN will both have two physical interfaces, each configured on a unique subnet <code>10.10.8</code> and <code>10.10.9</code>.</li>
+<li>We are not using a single physical interface with multiple aliases on either client(s) or SAN.</li>
+<li>SAN and client(s) are either directly attached, or are switched via a network that does not exhibit single points of failure, such a single switch, single path between switches, etc.</li>
+<li>SAN is configured with two targets, each bound to a Target Portal Group.</li>
+<li>Each Target Portal Group is tied to a single IP address, assigned to a physical interface, not an aliased interface and default iSCSI port 3260.</li>
+<li>Each network interface assigned to each Target Portal Group has a completely isolated physical path to the client.</li>
+<li>Both targets belong to single SCSI Target Group.</li>
+<li>iscsid and dm packages are correctly installed on the client, and dm-multipath service set to start automatically.</li>
+<li>For the purposes of this guide we are assuming that Remote Host and Target groups already exist. Please refer to the User&#8217;s Guide for further details about creation of Host and Target groups.</li>
+</ul>
+
+<h3 id="configsettingsused:">Config Settings Used:</h3>
+
+<ul>
+<li><p>iSCSI (COMSTAR) Target Names </p>
+
+<pre><code>iqn.2011-09.dom.homer:01:13611547-b4e6-e4b9-d97b-d1f4df275f58
+iqn.2011-09.dom.homer:02:0e4f921a-407e-eb9f-9f53-aded8d99a723
+</code></pre></li>
+<li><p>iSCSI (COMSTAR) Target Portal Group name(s) and associated IP(s) TGP / ip:port </p>
+
+<pre><code>tpg_lab9_e1000g1 / 10.10.8.90:3260 
+tpg_lab9_e1000g2 / 10.10.9.90:3260
+</code></pre></li>
+<li><p>SCSI (COMSTAR) Target Group name(s)</p>
+
+<pre><code>tg_hydra_databases
+</code></pre></li>
+<li><p>SCSI (COMSTAR) Initiator Group(s)</p>
+
+<pre><code>hg_hydra_databases
+</code></pre></li>
+<li><p>Initiator(s) from the CentOS client</p>
+
+<pre><code>iqn.2011-10.dom.homer:1:server-lab6-583bf04eae36
+</code></pre></li>
+</ul>
+
+<h3 id="stepsonnexentasan:">Steps on Nexenta SAN:</h3>
+
+<p>Perform following steps via Management GUI (NMV).</p>
+
+<ol>
+<li><p>We are going to create target portal groups first, to which we are going to bind our iscsi targets. </p>
+
+<ol>
+<li><p>Navigate to <strong>Data Management &gt; SCSI Target/Target Plus &gt; iSCSI &gt; Target Portal Groups</strong>. Click on <strong>Create</strong> under Manage iSCSI TPGs.</p></li>
+<li><p>Enter the name, in our case <code>tpg_lab9_e1000g1</code> in the Name field, and IP Address:Port, in our case <code>10.10.8.90:3260</code> in the Addresses field, then click <strong>Create</strong>. We choose to use a descriptive name for Target Portal Groups, including the name of network interface to which the group is bound.</p></li>
+<li><p>Repeat above step for second Target Portal Group. Each group is bound to a single IP Address. If more than two interfaces are being used, repeat for each interface/IP.</p></li>
+</ol></li>
+<li><p>Next, we are adding iSCSI Targets, Target Groups and Initiator Groups. </p>
+
+<ol>
+<li><p>Navigate to <strong>Data Management &gt; SCSI Target/Target Plus &gt; iSCSI &gt; Targets</strong>. Click <strong>Create</strong> under Manage iSCSI Targets.</p></li>
+<li><p>Enter the name, in our case <code>iqn.2011-09.dom.homer:01:13611547-b4e6-e4b9-d97b-d1f4df275f58</code> in the Name field. You many choose to leave this field empty to auto-generate a name.</p></li>
+<li><p>We are not using aliases, as they are optional, but you may choose to setup an alias for each target.</p></li>
+<li><p>Under iSCSI Target Portal Groups select one of the Target Portal groups created earlier. For simplicity of management, we used <code>:01:</code> and <code>:02:</code> in the name of the targets to designate first and second target and we relate first target to <code>tpg_lab9_e1000g1</code> and second target to <code>tpg_lab9_e1000g2</code>, then click Create.</p></li>
+<li><p>Navigate to <strong>Data Management &gt; SCSI Target/Target Plus &gt; SCSI Target &gt; Target Groups</strong>. Click on <strong>Create</strong> under Manage Target Groups.</p></li>
+<li><p>Enter the name, in our case <code>tg_hydra_databases</code> in the Name field, and select all targets, in our case, we select two targets we created earlier, then click <strong>Create</strong>.</p></li>
+<li><p>Navigate to <strong>Data Management &gt; SCSI Target/Target Plus &gt; SCSI Target &gt; Target Groups</strong>.</p></li>
+<li><p>Enter the name, in our case <code>hg_hydra_databases</code> in the Name field, and if Initiator names are already known you may enter them manually in the Additional Initiators field, otherwise we will update this group later after logging in from our client(s), then click <strong>Create</strong>.</p></li>
+</ol></li>
+<li><p>At this point we can create mappings as necessary. We have to have ZVOLs created first, prior to setting up mappings. Please, refer to the User&#8217;s Guide for further details on creation of ZVOLs and mappings. For the purposes of this document we are using four ZVOLs, with LUN ID&#8217;s 10 through 13 and <code>hg_hydra_databases</code> as the Host Group and <code>tg_hydra_databases</code> as the Target Group.</p></li>
+</ol>
+
+<h3 id="stepsclient-side:">Steps Client-Side:</h3>
+
+<ol>
+<li><p>Quick validation of the iscsid service is necessary to make sure that indeed it is setup correctly. Command <code>chkconfig --list iscsid</code> should return state of the iscsid service. We expect to have it enabled in runlevels 3, 4, and 5. If not enabled, run <code>chkconfig iscsid on</code>, which will assume defaults and enable service in runlevels 3, 4, and 5. Keep in mind, different distribution of Linux may have different names for services and tools/methods to enable/disable automatic startup of services. </p>
+
+<pre><code>prague# chkconfig --list iscsid
+iscsid          0:off   1:off   2:off   3:on    4:on    5:on    6:off
+</code></pre></li>
+<li><p>Next, we validate multipathd service is working correctly. The <code>mpathconf</code> utility will return information about the state of the multipath configuration.</p>
+
+<pre><code>prague# mpathconf 
+multipath is enabled
+find_multipaths is disabled
+user_friendly_names is enabled
+dm_multipath module is loaded
+multipathd is chkconfiged on
+</code></pre></li>
+<li><p>Now we will configure our iSCSI initiator settings. Depending upon your client, configuration files may/may not be in the same location(s). We will modify the <code>/etc/iscsi/initiatorname.iscsi</code> with a custom initiator name. By default, the file will already have an <code>InitiatorName</code> entry. We replace it with a custom entry, but this is strictly optional, and should be part of your naming convention decisions. </p>
+
+<pre><code>InitiatorName=iqn.2011-10.dom.homer:1:server-lab6-583bf04eae36
+</code></pre></li>
+<li><p>We are going to create a virtual iSCSI interface for each physical network interface, and bind the physical interfaces to the virtual iSCSI interfaces. The end-result will be two new iscsi interfaces: <code>sw-iscsi-0</code> and <code>sw-iscsi-1</code>, bound to physical network interfaces <code>eth1</code> and <code>eth2</code>. Avoid naming logical interfaces with the same names as the physical NICs. </p>
+
+<ol>
+<li><p>First, we create the logical interfaces for which a corresponding configuration file named <code>sw-iscsi-0</code> and <code>sw-iscsi-0</code> will be generated under <code>/var/lib/iscsi/ifaces</code>. </p>
+
+<pre><code>prague# iscsiadm --mode iface --op=new --interface sw-iscsi-0
+prague# iscsiadm --mode iface --op=new --interface sw-iscsi-1
+</code></pre></li>
+<li><p>Following the two <code>iscsiadm</code> commands we are going to modify two newly created config files with additional parameters. Here&#8217;s an example of one of the configuration files modified with details about the physical interface. Note, we are defining parameters here specific to each interface, and your configuration will certainly vary. To quickly collect information about each interface you could simply use the <code>ip</code> command: <code>ip addr show &lt;interface-name&gt;|egrep 'inet|link'</code>. This configuration explicitly binds our virtual interfaces to physical interfaces. Each interface is on its own network, in our case <code>10.10.8</code> and <code>10.10.9</code>. We can always validate our configuration with this: <code>for i in 0 1; do iscsiadm -m iface -I sw-iscsi-$i; done</code>, replacing 0 and 1 with whatever number of the iSCSI interface(s) we used.</p>
+
+<pre><code>prague# cat /var/lib/iscsi/ifaces/sw-iscsi-0
+# BEGIN RECORD 2.0-872
+iface.iscsi_ifacename = sw-iscsi-0
+iface.net_ifacename = eth1
+iface.hwaddress = 00:0c:29:94:5b:83
+iface.ipaddress = 10.10.8.60
+iface.transport_name = tcp
+# END RECORD
+
+prague# cat /var/lib/iscsi/ifaces/sw-iscsi-1
+# BEGIN RECORD 2.0-872
+iface.iscsi_ifacename = sw-iscsi-1
+iface.net_ifacename = eth2
+iface.hwaddress = 00:0c:29:94:5b:8d
+iface.ipaddress = 10.10.9.60
+iface.transport_name = tcp
+# END RECORD
+</code></pre></li>
+</ol></li>
+<li><p>Depending upon your client, tcp/ip kernel parameter <code>rp_filter</code> may need to be tuned, in order to allow for correct multipathing with iSCSI. For the purposes of this guide we set <code>0</code>. For each physical interface we add an entry to <code>/etc/sysctl.conf</code>. In our example, we are modifying this tunable for <code>eth1</code> and <code>eth2</code>. If the kernel tuning is being applied, either set the parameters via the <code>sysctl</code> command, or reboot system prior to next steps.</p>
+
+<pre><code>prague# grep eth[0-9].rp_filter /etc/sysctl.conf 
+net.ipv4.conf.eth1.rp_filter = 0
+net.ipv4.conf.eth2.rp_filter = 0
+</code></pre></li>
+<li><p>Next, we will perform a discovery of the targets via the portals that we exposed previously. We can do a discovery against one of both portals, and the result should be identical.</p>
+
+<ol>
+<li><p>We discover targets for each configured logical iSCSI interface. If you choose to have more than two logical interfaces, and therefore more than two paths to the SAN, perform the following step for each logical interface.</p>
+
+<pre><code>prague# iscsiadm -m discovery -t sendtargets --portal=10.10.8.90 -I sw-iscsi-0 --discover
+prague# iscsiadm -m discovery -t sendtargets --portal=10.10.9.90 -I sw-iscsi-1 --discover
+</code></pre></li>
+<li><p>We should validate nodes created as a result of the discovery. We expect to see two nodes for each portal on the SAN. </p>
+
+<pre><code>prage# iscsiadm -m node
+10.10.8.90:3260,2 iqn.2011-09.dom.homer:01:13611547-b4e6-e4b9-d97b-d1f4df275f58
+10.10.8.90:3260,2 iqn.2011-09.dom.homer:01:13611547-b4e6-e4b9-d97b-d1f4df275f58
+10.10.9.90:3260,2 iqn.2011-09.dom.homer:02:0e4f921a-407e-eb9f-9f53-aded8d99a723
+10.10.9.90:3260,2 iqn.2011-09.dom.homer:02:0e4f921a-407e-eb9f-9f53-aded8d99a723
+</code></pre></li>
+</ol></li>
+<li><p>At this point we have each logical iSCSI interface configured to login into all known portals on the SAN, and logging into all known targets. Thus, we have a choice to make. We can allow for this configuration to remain, or we can choose to isolate each logical interface to a single portal on the SAN.<br/>
+Each node will have a directory under <code>/var/lib/iscsi/nodes</code> with name identical to target name on the SAN, and a sub-directory for each portal. Here, we can see that leaf objects of this tree structure are files named identical to our logical iSCSI interfaces. In fact, these are config files generated upon successful target discovery for each interface. </p>
+
+<pre><code>prague# ls -l /var/lib/iscsi/nodes/iqn.2011-09.dom.homer:02:0e4f921a-407e-eb9f-9f53-aded8d99a723/10.10.9.90,3260,2
+total 8
+-rw-------. 1 root root 1784 Oct 16 12:42 sw-iscsi-0
+-rw-------. 1 root root 1784 Oct 16 12:42 sw-iscsi-1
+
+prague# ls -l /var/lib/iscsi/nodes/iqn.2011-09.dom.homer:01:13611547-b4e6-e4b9-d97b-d1f4df275f58/10.10.8.90,3260,2
+total 8
+-rw-------. 1 root root 1784 Oct 16 12:42 sw-iscsi-0
+-rw-------. 1 root root 1784 Oct 16 12:42 sw-iscsi-1  
+</code></pre>
+
+<p>Deletion of one of the interface configuration files under each node will in effect restrict that interface from logging into the target. At any time, you can choose which interfaces will login into which portals. For the purposes of this document we are going to assume that it is acceptable for each logical iSCSI interface to login into both portals.</p></li>
+<li><p>Next, we validate ability to login into both portals. We expect to see a successful login for each logical iSCSI interface into each configured portal.</p>
+
+<pre><code>prague#  iscsiadm -m node -l
+Logging in to [iface: sw-iscsi-1, target: iqn.2011-09.dom.homer:01:13611547-b4e6-e4b9-d97b-d1f4df275f58, portal: 10.10.8.90,3260]
+...trimmed...
+Login to [iface: sw-iscsi-1, target: iqn.2011-09.dom.homer:01:13611547-b4e6-e4b9-d97b-d1f4df275f58, portal: 10.10.8.90,3260] successful.
+...trimmed...
+</code></pre></li>
+<li><p>We validate that we are able see new iSCSI LUNs after logging into the portals by listing contents of <code>/dev/disk/by-*</code> directories. We expect to see four device files for each LUN, assuming we did not remove any interface configuration files as described in step 7 above.</p>
+
+<pre><code>prague# ls /dev/disk/by-path/|egrep &quot;10.10.*.90&quot;|egrep lun-1[0-3]
+ip-10.10.8.90:3260-iscsi-iqn.2011-09.dom.homer:01:13611547-b4e6-e4b9-d97b-d1f4df275f58-lun-10
+ip-10.10.8.90:3260-iscsi-iqn.2011-09.dom.homer:01:13611547-b4e6-e4b9-d97b-d1f4df275f58-lun-11
+ip-10.10.8.90:3260-iscsi-iqn.2011-09.dom.homer:01:13611547-b4e6-e4b9-d97b-d1f4df275f58-lun-12
+ip-10.10.8.90:3260-iscsi-iqn.2011-09.dom.homer:01:13611547-b4e6-e4b9-d97b-d1f4df275f58-lun-13
+...trimmed...
+</code></pre></li>
+<li><p>Because we have one additional layer between OS and iSCSI (DM-MP layer), we want to tune iSCSI parameters adjusting the time it takes to hand-off failed commands to the DM-MP layer. Typically, it takes 120 seconds for the iSCSI service to give-up on a command when there are issues with completing the command. We want this period to be a lot shorter, and allow DM-MP to try and switch to another path instead of potentially trying down the same path for 2 minutes. We need to modify <code>/etc/iscsi/iscsid.conf</code>, and comment out the default entry with value 120 (seconds), and add new entry with value 10. </p>
+
+<pre><code>prague# grep node.session.timeo.replacement_timeout /etc/iscsi/iscsid.conf
+#node.session.timeo.replacement_timeout = 120
+node.session.timeo.replacement_timeout = 10
+</code></pre></li>
+<li><p>There are a number of parameters that we have to configure in order for the device mapper to correctly multipath with these LUNs. First we are going to configure our <code>/etc/multipath.conf</code> configuration file, with basic settings necessary to properly manage multipath behavior and path failure. This is not an end-all-be-all configuration, rather a very good starting point for most NexentaStor deployments. Please be aware that this configuration of multipath may fail on systems with older version of multipath. If you are running Debian and older RedHat-based distributions, parameters that will most likely need to be adjusted are: <code>checker_timer</code>,<code>getuid_callout</code>, <code>path_selector</code>. Be certain to review your distribution&#8217;s multipath documentation, or a commented sample <code>multipath.conf</code> file. </p>
+
+<pre><code>defaults {
+        checker_timer               120
+        getuid_callout              &quot;/lib/udev/scsi_id --whitelisted --device=/dev/%n&quot;
+        no_path_retry               12
+        path_checker                directio
+        path_grouping_policy        group_by_serial
+        prio                        const
+        polling_interval            10
+        queue_without_daemon        yes
+        rr_min_io                   1000
+        rr_weight                   uniform
+        selector                    &quot;round-robin 0&quot;
+        udev_dir                    /dev
+        user_friendly_names         yes
+}
+blacklist {
+        devnode &quot;^(ram|raw|loop|fd|md|dm-|sr|scd|st)[0-9]*&quot;
+        devnode &quot;^hd[a-z]&quot;
+        devnode &quot;^sda&quot;
+        devnode &quot;^sda[0-9]&quot;
+        device {
+                vendor DELL
+                product &quot;PERC|Universal|Virtual&quot;
+        }
+}
+devices {
+      device {
+              ## This section Applicable to ALL NEXENTA/COMSTAR provisioned LUNs
+              ## And will set sane defaults, necessary to multipath correctly
+              ## Specific parameters and deviations from the defaults should be
+              ## configured in the multipaths section on a per LUN basis
+              ##
+              vendor                NEXENTA
+              product               COMSTAR
+              path_checker          directio
+              path_grouping_policy  group_by_node_name
+              failback              immediate
+              getuid_callout        &quot;/lib/udev/scsi_id --whitelisted --device=/dev/%n&quot;
+              rr_min_io             2000
+              ##
+              ##
+              ## Adjust `node.session.timeo.replacement_timeout` in /etc/iscsi/iscsid.conf
+              ## in order to rapidly fail commands down to the multipath layer
+              ## and allow DM-MP to manage path selection after failure
+              ## set node.session.timeo.replacement_timeout = 10
+              ##
+              ## The features parameter works with replacement_timeout adjustment
+              features              &quot;1 queue_if_no_path&quot;
+        }
+}
+</code></pre></li>
+<li><p>Next, we describe each LUN that we are going to access via multiple paths. Any parameters that we already set in <code>device</code> and <code>defaults</code> sections, we can skip, assuming we are accepting the global settings in the the <code>device</code> and <code>defaults</code> sections. Notice, we explicitly define WWID for each LUN. We also supply an alias, which will make it much easier to specifically identify LUNs; this is strictly optional. Parameters vendor and product will always be <code>NEXENTA</code> and <code>COMSTAR</code> respectively, unless explicitly changed on the SAN, which is out of scope of this configuration.</p>
+
+<pre><code>multipaths {
+            ## Define specifics about each LUN in this section, including any
+            ## parameters that will be different from defaults and device
+            ##
+       multipath {
+              alias                 hydra_apps-a01
+              wwid                  3600144f0f484400000004e8685e70001
+              vendor                NEXENTA
+              product               COMSTAR
+              path_selector         &quot;service-time 0&quot;
+              failback              immediate
+       }
+       multipath {
+              alias                 hydra_db-a01
+              wwid                  3600144f0f484400000004e8685f80002
+              vendor                NEXENTA
+              product               COMSTAR
+              path_selector         &quot;service-time 0&quot;
+              failback              immediate
+        }
+        multipath {
+              alias                 hydra_db-a02
+              wwid                  3600144f0f484400000004e86860a0003
+              vendor                NEXENTA
+              product               COMSTAR
+              path_selector         &quot;service-time 0&quot;
+              failback              immediate
+       }
+        multipath {
+              alias                 hydra_db-a03
+              wwid                  3600144f0f484400000004e8686210004
+              vendor                NEXENTA
+              product               COMSTAR
+              path_selector         &quot;service-time 0&quot;
+              failback              immediate
+       }
+}
+</code></pre></li>
+<li><p>After we save the file as <code>/etc/multipath.conf</code>, we are going to flush and reload device-mapper maps. At this point we are assuming that the <code>multipathd</code> service is running on the system. Running <code>multipath -v2</code> gives verbose enough details to make sure that maps are being created correctly.</p>
+
+<pre><code>prague# multipath -F
+prague# multipath -v2  
+</code></pre>
+
+<p>A typical multipath configuration for any single LUN will look very similar to the following:</p>
+
+<pre><code>hydra_db-a02 (3600144f0f484400000004e86860a0003) dm-4 NEXENTA,COMSTAR
+size=1.0G features='1 queue_if_no_path' hwhandler='0' wp=rw
+`-+- policy='service-time 0' prio=-1 status=active
+  |- 10:0:0:12 sdf 8:80  active undef running
+  `- 11:0:0:12 sdg 8:96  active undef running
+</code></pre></li>
+<li><p>Because we assigned an <code>alias</code> to each LUN, by default we will observe symbolic links to devices representing the LUNs, created under <code>/dev/mapper</code>. At this point we are ready to format these LUNs and apply a filesystem over them. Aliases are very convenient and will allow you to maintain access to the multipath device via a more accessible name.</p>
+
+<pre><code>prague# ls -l /dev/mapper
+total 0
+crw-rw----. 1 root root 10, 58 Oct 22 15:25 control
+lrwxrwxrwx. 1 root root      7 Oct 23 07:42 hydra_apps-a01 -&gt; ../dm-6
+lrwxrwxrwx. 1 root root      7 Oct 23 07:42 hydra_db-a01 -&gt; ../dm-2
+lrwxrwxrwx. 1 root root      7 Oct 23 07:42 hydra_db-a02 -&gt; ../dm-4
+lrwxrwxrwx. 1 root root      7 Oct 23 07:42 hydra_db-a03 -&gt; ../dm-3
+...trimmed...
+</code></pre></li>
+</ol>
